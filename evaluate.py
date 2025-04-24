@@ -116,13 +116,12 @@ def main():
         tiles_dir = os.path.join(args.input_dir, site, f"tiles_{args.tile_size}_{args.buffer}_{args.threshold}")
     
         if args.evaluation_mode == 'standard':
-            prec, recall, f1 = evaluate_model(cfg, tiles_dir, args.dem)
+            prec, recall, f1 = evaluate_model(cfg, tiles_dir)
             results[site] = {'precision': prec,
                              'recall': recall,
                              'f1': f1}
         else: # coco evaluation
             coco_evaluator(cfg, tiles_dir, args.output_dir)
-            evaluate_model(cfg, tiles_dir, args.dem)
 
 
 if __name__ == "__main__":

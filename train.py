@@ -11,11 +11,6 @@ from datetime import datetime
 from detectree2.preprocessing.tiling import tile_data, to_traintest_folders
 from detectree2.models.train import (register_train_data, MyTrainer, setup_cfg, 
                                     combine_dicts, load_json_arr, predictions_on_data)
-# from detectree2.models.outputs import to_eval_geojson
-# from detectree2.models.evaluation import site_f1_score2
-from detectron2.data import DatasetCatalog, MetadataCatalog
-from detectron2.utils.visualizer import Visualizer
-# from detectron2.engine import DefaultPredictor
 import iopath.common.file_io as file_io
 from glob import glob
 
@@ -42,9 +37,9 @@ def parse_arguments():
                         default='COCO-InstanceSegmentation/mask_rcnn_R_101_FPN_3x.yaml',
                         help='Base model from detectron2 model_zoo')
     parser.add_argument('-m', '--pretrained_model', type=str, 
-                        default='./models/pretrained/250312_flexi.pth',
+                        default='models/finetuned/250402_15_models/model_final.pth',
                         help='Path to pre-trained model weights')
-    parser.add_argument('--workers', type=int, default=6,
+    parser.add_argument('--workers', type=int, default=8,
                         help='Number of workers')
     parser.add_argument('--eval-period', type=int, default=100,
                         help='Evaluation period')
@@ -122,7 +117,7 @@ def train_model(args, site_data):
     
     now = datetime.now().strftime('%y%m%d_%H')
     models_dir = args.output_dir if args.output_dir else f"{now}_models"
-    models_dir = os.path.join('finetuned_models', models_dir)
+    models_dir = os.path.join('models/finetuned', models_dir)
     
     trains = tuple(train_datasets)
     tests = tuple(val_datasets)

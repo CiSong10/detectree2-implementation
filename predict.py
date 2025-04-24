@@ -6,30 +6,31 @@ A script for running tree crown detection using Detectree2.
 import os
 import argparse
 import shutil
+import glob
 
 from detectree2.preprocessing.tiling import tile_data
-from detectree2.models.outputs import project_to_geojson, stitch_crowns, clean_crowns
+from detectree2.models.outputs import project_to_geojson, stitch_crowns, clean_crowns, post_clean
 from detectree2.models.predict import predict_on_data
 from detectree2.models.train import setup_cfg
 from detectron2.engine import DefaultPredictor
-import glob
+from secondary_cleaning import secondary_cleaning
 
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Tree crown detection using Detectree2")
     
-    parser.add_argument("-i", "--input-path", default="./deploy_data", 
-                        help="Path to the site data directory (default: ./deploy_data)")
+    parser.add_argument("-i", "--input-path", default="./data/predict", 
+                        help="Path to the site data directory (default: ./data/predict)")
     parser.add_argument("-o", "--output-suffix", default="", 
                         help="Suffix to add to output filename (default: '')")
-    parser.add_argument("-m", "--model-path", default="325_flexi/model_final.pth",
+    parser.add_argument("-m", "--model-path", default="models/finetuned/250402_15_models/model_final.pth",
                         help="Path to the trained model")
     parser.add_argument("-s", "--tile-size", type=int, default=40, 
                         help="Width and Height of tiles (default: 40)")
     parser.add_argument("-b", "--buffer", type=int, default=30, 
                         help="Buffer around tiles (default: 30)")
-    parser.add_argument("--confidence", type=float, default=0.15,
-                        help="Confidence threshold for filtering crowns (default: 0.15)")
+    parser.add_argument("--confidence", type=float, default=0.2,
+                        help="Confidence threshold for filtering crowns (default: 0.2)")
     parser.add_argument("--simplify", type=float, default=0.3,
                         help="Tolerance for simplifying crown geometries (default: 0.3). The higher this value, the smaller the number of vertices in the resulting geometry.")
     parser.add_argument("--intersection", type=float, default=0.5,
@@ -72,8 +73,11 @@ def process_site(args) -> None:
 
     clean = clean_crowns(crowns, args.intersection, confidence=args.confidence)
     clean = clean.set_geometry(clean.simplify(args.simplify)) 
-    clean.to_file(output_file)
-    os.remove(stitched_crowns) if os.path.exists(stitch_crowns) else None
+    os.remove(stitched_crowns) if os.path.exists(stitched_crowns) else None
+
+    clean_2 = secondary_cleaning(clean)
+    clean_3 = post_clean(unclean_df=crowns, clean_df=clean_2)
+    clean_3.to_file(output_file)
 
     print(f"Done predicting. Results saved in {output_file}")
 
