@@ -1,29 +1,35 @@
 #!/usr/bin/env python
 """
 A script for running tree crown detection using Detectree2.
+#TODO: rewrite tile_data so it can use parellel processing
 """
 
-import os
 import argparse
 import shutil
-import glob
+import logging
+from pathlib import Path
+import geopandas as gpd
+from datetime import datetime
 
 from detectree2.preprocessing.tiling import tile_data
 from detectree2.models.outputs import project_to_geojson, stitch_crowns, clean_crowns, post_clean
 from detectree2.models.predict import predict_on_data
 from detectree2.models.train import setup_cfg
 from detectron2.engine import DefaultPredictor
-from secondary_cleaning import secondary_cleaning
+
+from utility import find_final_model, secondary_cleaning
+
+logging.getLogger("detectree2.preprocessing.tiling").setLevel(logging.ERROR)
 
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Tree crown detection using Detectree2")
     
-    parser.add_argument("-i", "--input-path", default="./data/predict", 
-                        help="Path to the site data directory (default: ./data/predict)")
+    parser.add_argument("-i", "--input-path", required=True, 
+                        help="Path to the site data directory")
     parser.add_argument("-o", "--output-suffix", default="", 
                         help="Suffix to add to output filename (default: '')")
-    parser.add_argument("-m", "--model-path", default="models/finetuned/250402_15_models/model_final.pth",
+    parser.add_argument("-m", "--model-path", default="models/pretrained/250312_flexi.pth",
                         help="Path to the trained model")
     parser.add_argument("-s", "--tile-size", type=int, default=40, 
                         help="Width and Height of tiles (default: 40)")
@@ -31,6 +37,8 @@ def parse_arguments():
                         help="Buffer around tiles (default: 30)")
     parser.add_argument("--confidence", type=float, default=0.2,
                         help="Confidence threshold for filtering crowns (default: 0.2)")
+    parser.add_argument("--min-area", type=float, default=2,
+                        help="Minimum area of crowns to be retained. (default: 2 m^2)")    
     parser.add_argument("--simplify", type=float, default=0.3,
                         help="Tolerance for simplifying crown geometries (default: 0.3). The higher this value, the smaller the number of vertices in the resulting geometry.")
     parser.add_argument("--intersection", type=float, default=0.5,
@@ -44,40 +52,51 @@ def process_site(args) -> None:
     """
     Process a site for tree crown detection.
     """
-    input_path=args.input_path
+    input_path = Path(args.input_path)
+    img_dir = input_path / "rgb"
+    tiles_dir = input_path / f"tiles_pred_{args.tile_size}_{args.buffer}"
+    predictions_json_path = tiles_dir / "predictions"
+    predictions_geojson_path = tiles_dir / "predictions_geo"
+    model_path = find_final_model(args.model_path)
 
-    img_dir = os.path.join(input_path, "rgb")
-    appends = f"{args.tile_size}_{args.buffer}"
-    tiles_dir = os.path.join(input_path, f"tiles_pred_{appends}")
-    predictions_geo_path = os.path.join(tiles_dir, "predictions_geo")
-    output_file = os.path.join(input_path, f"crowns_out_{args.output_suffix}.gpkg")
-    
-    if not args.force_retile and os.path.isdir(tiles_dir):
+    if not args.output_suffix:
+        timestamp = datetime.now().strftime("%y%m%d_%H")
+        output_file = input_path / f"crowns_out_{timestamp}.gpkg"
+    else:
+        output_file = input_path / f"crowns_out_{args.output_suffix}.gpkg"
+
+    # Step 1: Tiling
+    if not args.force_retile and tiles_dir.is_dir():
         pass
     else:
-        shutil.rmtree(tiles_dir) if os.path.isdir(tiles_dir) else None
-        img_files = glob.glob(os.path.join(img_dir, "*.tif"))
+        if tiles_dir.is_dir():
+            shutil.rmtree(tiles_dir)
+        img_files = list(img_dir.glob("*.tif"))
         for img_path in img_files:
             print(f"Tiling image: {img_path}")
             tile_data(img_path, tiles_dir, args.buffer, args.tile_size, args.tile_size, dtype_bool=True)
     
-    cfg = setup_cfg(update_model=args.model_path)
+    # Step 2: Predicting
+    cfg = setup_cfg(update_model=model_path)
     predict_on_data(tiles_dir, predictor=DefaultPredictor(cfg))
     project_to_geojson(tiles_dir, 
-                       os.path.join(tiles_dir, "predictions"),
-                       predictions_geo_path)
+                       predictions_json_path,
+                       predictions_geojson_path)
+    shutil.rmtree(predictions_json_path, ignore_errors=True) # Use this to save disk space 
     
-    crowns = stitch_crowns(predictions_geo_path, 1)
-    stitched_crowns = os.path.join(input_path, f"stitched_crowns_{args.output_suffix}.gpkg")
+    # Step 3: Stitching
+    crowns = stitch_crowns(predictions_geojson_path, 1)
+    stitched_crowns = input_path / f"stitched_crowns_{args.output_suffix}.gpkg"
     crowns.to_file(stitched_crowns) # Temperarily save stitched crowns
+    shutil.rmtree(predictions_geojson_path, ignore_errors=True) # Use this to save disk space 
 
-    clean = clean_crowns(crowns, args.intersection, confidence=args.confidence)
+    # Step 4: Cleaning duplicates
+    clean = clean_crowns(crowns, args.intersection, confidence=args.confidence, area_threshold=args.min_area)
     clean = clean.set_geometry(clean.simplify(args.simplify)) 
-    os.remove(stitched_crowns) if os.path.exists(stitched_crowns) else None
+    stitched_crowns.unlink(missing_ok=True)
 
     clean_2 = secondary_cleaning(clean)
-    clean_3 = post_clean(unclean_df=crowns, clean_df=clean_2)
-    clean_3.to_file(output_file)
+    clean_2.to_file(output_file)
 
     print(f"Done predicting. Results saved in {output_file}")
 
@@ -88,4 +107,7 @@ def main():
 
 
 if __name__ == "__main__":
+    start_time = datetime.now()
     main()
+    end_time = datetime.now()
+    print(f"Total runtime: {end_time - start_time}")

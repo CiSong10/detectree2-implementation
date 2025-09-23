@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-import os
 import argparse
 import shutil
-import glob
 import logging
 import sys
-from typing import Tuple, Optional
+from typing import Tuple
+from pathlib import Path
 
 from detectree2.preprocessing.tiling import tile_data
 from detectree2.models.train import (register_train_data, register_test_data, setup_cfg, 
@@ -14,6 +13,7 @@ from detectree2.models.outputs import to_eval_geojson
 from detectree2.models.evaluation import site_f1_score2
 from detectron2.engine import DefaultPredictor
 
+from utility import find_final_model
 
 # Set up logging
 logging.basicConfig(
@@ -43,12 +43,12 @@ def parse_arguments() -> argparse.Namespace:
                         help='Height and Width of tiles')
     parser.add_argument('-t', '--threshold', type=float, default=0.1,
                         help='Threshold for tiling')
-    parser.add_argument('--dem', type=str, default='./data/DEM_m.tif',
+    parser.add_argument('--dem', type=str, default='',
                         help='Path to DEM layer (relative to site directory)')
     parser.add_argument('--evaluation-mode', type=str, choices=['standard', 'coco'], default='standard',
                         help='Evaluation method to use (standard or COCO evaluator)')
     parser.add_argument('--output-dir', type=str, default='.data/evaluation/',
-                        help='Directory to save evaluation results')
+                        help='Directory to save evaluation results (for COCO evaluation only)')
     return parser.parse_args()
 
 
@@ -63,15 +63,19 @@ def evaluate_model(cfg, tiles_dir, dem=None) -> Tuple[float, float, float]:
     Returns:
         Tuple[float, float, float]: Precision, recall, and F1 score
     """
-    pred_folder = os.path.join(tiles_dir, "predictions")
-    shutil.rmtree(pred_folder, True) if os.path.exists(pred_folder) else None
-    shutil.rmtree('./eval', True) if os.path.exists('./eval') else None
+    tiles_dir = Path(tiles_dir)
+    pred_folder = tiles_dir / "predictions"
+    if pred_folder.exists():
+        shutil.rmtree(pred_folder, True)
+    if Path('./eval').exists():
+        shutil.rmtree('./eval', True)
+
     predictions_on_data(tiles_dir, DefaultPredictor(cfg))
     to_eval_geojson(pred_folder)
 
     prec, recall, f1 = site_f1_score2(
         tile_directory=tiles_dir, 
-        test_directory=os.path.join(tiles_dir, "test"),
+        test_directory=tiles_dir / "test",
         pred_directory=pred_folder,
         lidar_img=dem,
         IoU_threshold= 0.5,
@@ -90,8 +94,8 @@ def coco_evaluator(cfg, tiles_dir, output_dir="./evaluation_output/"):
     logger.info("Use Detectron2 built-in COCO Evaluator")
 
     #register your data
-    test_folder = os.path.join(tiles_dir, "test")
-    register_test_data(test_folder)
+    test_folder =  tiles_dir / "test"
+    register_test_data(str(test_folder))
 
     cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.3  # set threshold for this model
 
@@ -105,15 +109,16 @@ def coco_evaluator(cfg, tiles_dir, output_dir="./evaluation_output/"):
 def main():
     args = parse_arguments()
 
-    sites = [d for d in os.listdir(args.input_dir)
-             if os.path.isdir(os.path.join(args.input_dir, d))]
-    
-    cfg = setup_cfg(update_model=args.model_path)
+    input_dir = Path(args.input_dir)
+    sites = [d for d in input_dir.iterdir() if input_dir.is_dir()]
+    model_path = find_final_model(args.model_path)
+
+    cfg = setup_cfg(update_model=model_path)
     
     results = {} # This currently doesn't do anything. Can develop to output average prec, recall, f1 in the future.
     for site in sites:
         logger.info(f"Processing site: {site}")
-        tiles_dir = os.path.join(args.input_dir, site, f"tiles_{args.tile_size}_{args.buffer}_{args.threshold}")
+        tiles_dir = site / f"tiles_{args.tile_size}_{args.buffer}_{args.threshold}"
     
         if args.evaluation_mode == 'standard':
             prec, recall, f1 = evaluate_model(cfg, tiles_dir)

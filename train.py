@@ -15,12 +15,17 @@ import iopath.common.file_io as file_io
 from glob import glob
 
 from evaluate import evaluate_model
+from pathlib import Path
+
+from utility import find_final_model
 
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description='DetecTree2 Fine-tuning Script')
     parser.add_argument('-i', '--train-dir', type=str, default='./data/train/',
                         help='Root training directory containing all site folders')
+    parser.add_argument('-o', '--output-dir', type=str, default=None,
+                        help='Custom output models directory name')    
     parser.add_argument('-b', '--buffer', type=int, default=30,
                         help='Buffer size for tiling')
     parser.add_argument('-s', '--tile-size', type=int, default=40,
@@ -31,13 +36,13 @@ def parse_arguments():
                         help='Fraction of data for testing')
     parser.add_argument('--folds', type=int, default=5,
                         help='Number of folds for cross-validation')
-    parser.add_argument('--val-fold', type=int, default=5,
+    parser.add_argument('--val-fold', type=int, default=4,
                         help='Validation fold number')
     parser.add_argument('--base_model', type=str, 
                         default='COCO-InstanceSegmentation/mask_rcnn_R_101_FPN_3x.yaml',
                         help='Base model from detectron2 model_zoo')
     parser.add_argument('-m', '--pretrained_model', type=str, 
-                        default='models/finetuned/250402_15_models/model_final.pth',
+                        default='models/pretrained/250312_flexi.pth',
                         help='Path to pre-trained model weights')
     parser.add_argument('--workers', type=int, default=8,
                         help='Number of workers')
@@ -49,39 +54,37 @@ def parse_arguments():
                         help='Patience for early stopping')
     parser.add_argument('--force-retile', action='store_true',
                         help='Force re-tiling even if tiles directory already exists')
-    parser.add_argument('-o', '--output-dir', type=str, default=None,
-                        help='Custom output models directory name')
-    parser.add_argument('--dem', type=str, default='./data/DEM_m.tif',
+    parser.add_argument('--dem', type=str, default='',
                         help='Path to DEM layer')
+    parser.add_argument('--strict', action='store_true',
+                        help='use strict train/test split')
     return parser.parse_args()
 
 
 def prepare_data(args):
     """Prepare data by tiling and organizing into train/test folders"""
-    sites = [d for d in os.listdir(args.train_dir)
-             if os.path.isdir(os.path.join(args.train_dir, d))]
+    train_dir = Path(args.train_dir)
+    sites = [site_dir for site_dir in train_dir.iterdir() if site_dir.is_dir()]
     site_data = []
 
-    for site in sites:
-        print(f"Processing site: {site}")
-        site_dir = os.path.join(args.train_dir, site)
+    for site_dir in sites:
+        print(f"Processing site: {site_dir.stem}")
         
         appends = f"{args.tile_size}_{args.buffer}_{args.threshold}"
-        tiles_dir = os.path.join(site_dir, f"tiles_{appends}")
+        tiles_dir = site_dir / f"tiles_{appends}"
     
-        if os.path.isdir(tiles_dir) and not args.force_retile:
-            train_dir = os.path.join(tiles_dir, "train")
-            if os.path.exists(train_dir):
+        if tiles_dir.is_dir() and not args.force_retile:
+            train_dir = tiles_dir / "train"
+            if train_dir.exists():
                 print(f"  Tiles directory already exists: {tiles_dir}")
                 print(f"  Skipping tiling for this site (use --force-retile to override)")
-            else:
-                to_traintest_folders(tiles_dir, tiles_dir, test_frac=args.test_frac, 
-                                     folds=args.folds, strict=False)
+
         else:
-            shutil.rmtree(tiles_dir) if os.path.isdir(tiles_dir) else None
+            if tiles_dir.is_dir():
+                shutil.rmtree(tiles_dir) 
             
-            crown_path = glob(os.path.join(site_dir, "crowns", "*.shp"))[0]
-            img_path = glob(os.path.join(site_dir, "rgb", "*.tif"))[0]
+            crown_path = next((site_dir / "crowns").glob("*.shp"))
+            img_path = next((site_dir / "rgb").glob("*.tif"))
             crowns = gpd.read_file(crown_path)
             image = rasterio.open(img_path)
 
@@ -91,23 +94,24 @@ def prepare_data(args):
             
             tile_data(img_path, tiles_dir, args.buffer, args.tile_size, args.tile_size, 
                     crowns, args.threshold, mode="rgb")
-            to_traintest_folders(tiles_dir, tiles_dir, test_frac=args.test_frac, 
-                                 folds=args.folds, strict=False)
             
-        site_data.append({"site_name": site,
+        to_traintest_folders(tiles_dir, tiles_dir, test_frac=args.test_frac, 
+                                 folds=args.folds, strict=args.strict)
+            
+        site_data.append({"site_name": site_dir.stem,
                           "tiles_dir": tiles_dir,
                           "appends": appends})
     
     return site_data
 
 
-def train_model(args, site_data):
+def train_model(args, models_dir, site_data):
     train_datasets = []
     val_datasets = []
 
     for site_info in site_data:
         site_name = site_info["site_name"]
-        train_location = os.path.join(site_info["tiles_dir"], "train")
+        train_location = site_info["tiles_dir"] / "train"
         register_train_data(train_location, site_name, val_fold=args.val_fold)
 
         train_datasets.append(f"{site_name}_train")
@@ -115,16 +119,12 @@ def train_model(args, site_data):
     
     file_io.g_pathmgr._DISABLE_TELEMETRY = True
     
-    now = datetime.now().strftime('%y%m%d_%H')
-    models_dir = args.output_dir if args.output_dir else f"{now}_models"
-    models_dir = os.path.join('models/finetuned', models_dir)
-    
     trains = tuple(train_datasets)
     tests = tuple(val_datasets)
     
     cfg = setup_cfg(args.base_model, trains, tests, args.pretrained_model, 
                    workers=args.workers, eval_period=args.eval_period, 
-                   max_iter=args.max_iter, out_dir=models_dir,
+                   max_iter=args.max_iter, out_dir=str(models_dir),
                    resize="rand_fixed")
     
     trainer = MyTrainer(cfg, patience=args.patience)
@@ -136,11 +136,11 @@ def train_model(args, site_data):
 def plot_metrics(models_dir, site_data):
     """Plot and save training metrics"""
     # Create plots directory
-    plots_dir = os.path.join(models_dir, "plots")
-    os.makedirs(plots_dir, exist_ok=True)
+    plots_dir = models_dir / "plots"
+    plots_dir.mkdir(exist_ok=True)
     
     # Load metrics
-    metrics_path = os.path.join(models_dir, 'metrics.json')
+    metrics_path = models_dir / 'metrics.json'
     experiment_metrics = load_json_arr(metrics_path)
     
     # Plot training and validation loss
@@ -159,7 +159,7 @@ def plot_metrics(models_dir, site_data):
     plt.ylabel('Total Loss')
     plt.xlabel('Number of Iterations')
     plt.tight_layout()
-    plt.savefig(os.path.join(plots_dir, 'training_validation_loss.png'), dpi=300)
+    plt.savefig(plots_dir / 'training_validation_loss.png', dpi=300)
     plt.close()
     
     # Plot AP50 metrics
@@ -186,58 +186,39 @@ def plot_metrics(models_dir, site_data):
     plt.xlabel('Number of Iterations')
     plt.grid(True, linestyle='--', alpha=0.7)
     plt.tight_layout()
-    plt.savefig(os.path.join(plots_dir, 'val_fold_ap50.png'), dpi=300)
+    plt.savefig(plots_dir / 'val_fold_ap50.png', dpi=300)
     plt.close()
     
     print(f"Saved plots to {plots_dir}")
 
 
-def find_final_model(output_dir):
-    model_final_path = os.path.join(output_dir, 'model_final.pth')
-    if os.path.isfile(model_final_path):
-        return model_final_path
-    else:
-        model_files = glob(os.path.join(output_dir, 'model_*.pth'))
-        max_suffix = -1
-        selected_model = None
-
-        for model_file in model_files:
-            try:
-                # Extract numerical suffix from filename
-                filename = os.path.basename(model_file)
-                suffix = int(filename.split('_')[1].split('.')[0])
-                if suffix > max_suffix:
-                    max_suffix = suffix
-                    selected_model = model_file
-            except (IndexError, ValueError):
-                # Skip files that don't match the expected pattern
-                continue
-    
-        if selected_model is None:
-            raise FileNotFoundError(f"No valid model found in {output_dir}")
-
-        return selected_model
-
-
 def main():
     args = parse_arguments()
+    now = datetime.now().strftime('%y%m%d_%H')
+    output_dir_name = args.output_dir if args.output_dir else f"{now}_models"
+    models_dir = Path('models/finetuned') / output_dir_name
+
     site_data = prepare_data(args)
-    cfg = train_model(args, site_data)
-    plot_metrics(cfg.OUTPUT_DIR, site_data)
-    os.rmdir('train_outputs') if os.path.isdir('train_outputs') and len(os.listdir('train_outputs'))==0 else None
-    print(f"Fine-tuning completed. Results saved in {cfg.OUTPUT_DIR}")
+    cfg = train_model(args, models_dir, site_data)
+    plot_metrics(models_dir, site_data)
+
+    if Path("train_outputs").is_dir() and not any(Path("train_outputs").iterdir()):
+        Path("train_outputs").rmdir()
+
+    print(f"Fine-tuning completed. Results saved in {models_dir}")
 
     # Evaluation
     # Find the finalist model
-    update_model = find_final_model(cfg.OUTPUT_DIR)
+    update_model = find_final_model(models_dir)
     print(f'\n Evaluating model {update_model}...')
     cfg = setup_cfg(update_model=update_model)
     for site_info in site_data:
         print(f"\n Evaluating site: {site_info['site_name']}")
         print(f"\n tiles dir: {site_info['tiles_dir']}")
 
-        evaluate_model(cfg, site_info['tiles_dir'], args.dem)
+        evaluate_model(cfg, site_info['tiles_dir'])
 
 
 if __name__ == "__main__":
+    os.environ["IOPATH_DISABLE_TELEMETRY"] = "1"
     main()
