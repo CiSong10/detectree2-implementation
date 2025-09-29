@@ -17,7 +17,7 @@ from glob import glob
 from evaluate import evaluate_model
 from pathlib import Path
 
-from utility import find_final_model
+from pipeline import find_final_model
 
 
 def parse_arguments():

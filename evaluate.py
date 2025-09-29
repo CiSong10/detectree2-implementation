@@ -13,7 +13,7 @@ from detectree2.models.outputs import to_eval_geojson
 from detectree2.models.evaluation import site_f1_score2
 from detectron2.engine import DefaultPredictor
 
-from utility import find_final_model
+from pipeline import find_final_model
 
 # Set up logging
 logging.basicConfig(

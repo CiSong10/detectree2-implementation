@@ -6,6 +6,12 @@ from pathlib import Path
 from os import PathLike
 import geopandas as gpd
 from tqdm import tqdm
+import shutil
+import random
+from detectron2.data import DatasetCatalog, MetadataCatalog
+from detectree2.preprocessing.tiling import image_details, is_overlapping_box
+from detectree2.models.train import register_train_data
+
 
 def find_final_model(path: str | PathLike[str]) -> str:
     """
@@ -131,3 +137,93 @@ def secondary_cleaning(crowns,
     print(f"Total crowns removed: {len(crowns_to_remove)} of {len(crowns)} ({len(crowns_to_remove)/len(crowns)*100:.1f}%)")
     
     return cleaned_crowns
+
+
+def to_traintest_folders_sample(
+        tiles_dir: Path,
+        tiles_root: Path,
+        test_frac: float = 0.15,
+        folds: int = 1,
+        strict: bool = False,
+        seed: int = None,
+        sample_n_tiles: int = None) -> None:
+    """
+    Split tiles into train/test folders, with optional sampling of training tiles
+    before splitting into folds.
+
+    Args:
+        tiles_dir: folder with tiles
+        tiles_root: folder to save train and test folders
+        test_frac: fraction of tiles to be used for testing (not affected by sampling)
+        folds: number of folds to split the data into
+        strict: if True, remove overlapping train tiles
+        seed: random seed
+        sample_n_tiles: number of tiles to sample for training (after test selection).
+                        If None, use all remaining tiles.
+
+    Returns:
+        None
+    """
+
+    if not tiles_dir.exists():
+        raise IOError(f"Tiles folder does not exist: {tiles_dir}")
+
+    # Clean previous train/test folders
+    shutil.rmtree(tiles_root / "train", ignore_errors=True)
+    shutil.rmtree(tiles_root / "test", ignore_errors=True)
+    (tiles_root / "train").mkdir(parents=True, exist_ok=True)
+    (tiles_root / "test").mkdir(parents=True, exist_ok=True)
+
+    # Collect all tile stems
+    tile_names = [p.stem for p in tiles_dir.glob("*.geojson")]
+    if seed is not None:
+        random.seed(seed)
+    random.shuffle(tile_names)
+
+    # --- 1) Split into test and train pools ---
+    n_test = int(len(tile_names) * test_frac)
+    test_tiles = tile_names[:n_test]
+    train_tiles = tile_names[n_test:]  # remaining available for training
+
+    # --- 2) Copy test tiles ---
+    test_boxes = []
+    for tile in test_tiles:
+        test_boxes.append(image_details(tile))
+        shutil.copy(tiles_dir / f"{tile}.geojson", tiles_root / "test")
+
+    # --- 3) Optionally sample train tiles ---
+    if sample_n_tiles is not None and sample_n_tiles < len(train_tiles):
+        train_tiles = random.sample(train_tiles, sample_n_tiles)
+
+    # --- 4) Copy training tiles (respecting "strict" mode) ---
+    for tile in train_tiles:
+        train_box = image_details(tile)
+        if strict:
+            if not is_overlapping_box(test_boxes, train_box):
+                shutil.copy(tiles_dir / f"{tile}.geojson", tiles_root / "train")
+        else:
+            shutil.copy(tiles_dir / f"{tile}.geojson", tiles_root / "train")
+
+    # --- 5) Split training into folds ---
+    train_roots = [p.stem for p in (tiles_root / "train").glob("*.geojson")]
+    random.shuffle(train_roots)
+    folds_split = np.array_split(train_roots, folds)
+
+    for i, fold in enumerate(folds_split, start=1):
+        fold_dir = tiles_root / f"train/fold_{i}"
+        fold_dir.mkdir(parents=True, exist_ok=True)
+        for name in fold:
+            shutil.move(tiles_root / f"train/{name}.geojson", fold_dir / f"{name}.geojson")
+
+
+def safe_register_train_data(train_location, name: str = "tree", val_fold=None, class_mapping_file=None):
+    # First unregister if already exists
+    for d in ["train", "val", "full"]:
+        dataset_name = f"{name}_{d}"
+        if dataset_name in DatasetCatalog.list():
+            DatasetCatalog.remove(dataset_name)
+            MetadataCatalog.remove(dataset_name)
+
+    # Then re-register as usual
+    register_train_data(train_location, name, val_fold, class_mapping_file)
+

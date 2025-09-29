@@ -17,7 +17,7 @@ from detectree2.models.predict import predict_on_data
 from detectree2.models.train import setup_cfg
 from detectron2.engine import DefaultPredictor
 
-from utility import find_final_model, secondary_cleaning
+from pipeline import find_final_model, secondary_cleaning
 
 logging.getLogger("detectree2.preprocessing.tiling").setLevel(logging.ERROR)
 
