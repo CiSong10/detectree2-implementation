@@ -7,8 +7,8 @@ class Configs:
     if predict or eval, the data_dir is the data to be predicted, model_dir is the finetuned model dir
     """
 
-    model_name: str = None
-    data_sites: str | list[str]  = None
+    model: str = None
+    data: str | list[str]  = None
 
     # tiling
     tile_size: int = 90

@@ -8,9 +8,18 @@ import geopandas as gpd
 from tqdm import tqdm
 import shutil
 import random
+import rasterio
+import cv2
+import json
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
 from detectron2.data import DatasetCatalog, MetadataCatalog
+from detectron2.evaluation.coco_evaluation import instances_to_coco_json
+from detectron2.engine import DefaultPredictor
+
 from detectree2.preprocessing.tiling import image_details, is_overlapping_box
 from detectree2.models.train import register_train_data
+from detectree2.models.predict import get_tree_dicts, get_filenames
 
 
 def find_final_model(path: str | PathLike[str]) -> str:
@@ -227,3 +236,73 @@ def safe_register_train_data(train_location, name: str = "tree", val_fold=None, 
     # Then re-register as usual
     register_train_data(train_location, name, val_fold, class_mapping_file)
 
+
+def parallel_predict_on_data(
+        directory: str | Path = "./",
+        out_folder: str | Path = "predictions",
+        cfg=None,
+        eval: bool=False,
+        num_predictions=0,
+        max_workers=4
+        ) -> None:
+    """
+    Make predictions on tiled data in parallel using multiple processes.
+    One global progress bar is shown.
+    """
+    directory = Path(directory)
+    pred_dir = directory / out_folder
+    pred_dir.mkdir(parents=True, exist_ok=True)
+
+    # Get dataset dictionaries
+    if eval:
+        dataset_dicts = get_tree_dicts(directory)
+        if dataset_dicts:
+            sample_file = Path(dataset_dicts[0]["file_name"])
+            _, mode = get_filenames(sample_file.parent)
+        else:
+            mode = None
+    else:
+        dataset_dicts, mode = get_filenames(directory)
+
+    # Subset if needed
+    num_to_pred = len(dataset_dicts) if num_predictions == 0 else num_predictions
+    dataset_dicts = dataset_dicts[:num_to_pred]
+
+    # Run parallel prediction
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(_predict_file, d, pred_dir, cfg)
+            for d in dataset_dicts
+        ]
+
+        # Global progress bar
+        for future in tqdm(as_completed(futures),
+                           total=len(futures),
+                           desc=f"Predicting files in mode {mode}",
+                           unit="file"):
+            future.result()  # raise exception if any
+
+
+def _predict_file(d, pred_dir, cfg):
+    """
+    Worker function: create predictor, run inference, save results.
+    Each process loads its own model (CUDA-safe).
+    """
+    predictor = DefaultPredictor(cfg)
+
+    file_name = Path(d['file_name'])
+    file_ext = file_name.suffix.lower()
+
+    if file_ext == ".png":
+        img = cv2.imread(str(file_name))
+    elif file_ext == ".tif":
+        with rasterio.open(file_name) as src:
+            img = src.read().transpose(1, 2, 0)
+    else:
+        return 
+    
+    outputs = predictor(img)
+
+    output_file = pred_dir / f"Prediction_{file_name.stem}.json"
+    evaluations = instances_to_coco_json(outputs["instances"].to("cpu"), str(file_name))
+    output_file.write_text(json.dumps(evaluations))

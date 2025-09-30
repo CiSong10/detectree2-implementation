@@ -15,7 +15,8 @@ from detectree2.models.evaluation import site_f1_score2
 from detectron2.engine import DefaultPredictor
 from configs import Configs
 
-from utility import find_final_model, secondary_cleaning, to_traintest_folders_sample, safe_register_train_data
+from utility import (find_final_model, secondary_cleaning, to_traintest_folders_sample, 
+                     safe_register_train_data, parallel_predict_on_data)
 
 """ data structure
 
@@ -51,12 +52,12 @@ class Pipeline:
 
         self.appends = f"{self.configs.tile_size}_{self.configs.buffer}_{self.configs.threshold}"
         self.model_dir = Path("models/finetuned") / (
-            configs.model_name or datetime.now().strftime("%y%m%d_%H")
+            configs.model or datetime.now().strftime("%y%m%d_%H")
         )
         self.model_dir.mkdir(parents=True, exist_ok=True)
 
-        if isinstance(configs.data_sites, str):
-            data_sites = [configs.data_sites]
+        if isinstance(configs.data, str):
+            data_sites = [configs.data]
         self.sites = [Path('data') / site for site in data_sites]
 
         random.seed(configs.seed)
@@ -140,19 +141,23 @@ class Pipeline:
         trainer.train()
         return cfg
 
-    def predict(self):
+    def predict(self, parallel=False):
         for site_dir in self.sites:
             tiles_root = site_dir / f"tiles_{self.appends}"
             tiles_dir = tiles_root / "tiles"
             predictions_json_path = tiles_root / "predictions"
             predictions_geojson_path = tiles_dir / "predictions_geo"
-            crowns_out_file = site_dir / f"crowns_out_{self.configs.model_name}.gpkg"
+            crowns_out_file = site_dir / f"crowns_out_{self.configs.model}.gpkg"
 
             # step 0: Tiling (already done)
             # step 1: predicting
             model_path = find_final_model(self.model_dir)
             cfg = setup_cfg(update_model=model_path)
-            predict_on_data(tiles_dir, predictor=DefaultPredictor(cfg))
+            if parallel:
+                parallel_predict_on_data(tiles_dir, cfg=cfg)
+            else:
+                predict_on_data(tiles_dir, predictor=DefaultPredictor(cfg))
+            
             project_to_geojson(tiles_dir,
                                predictions_json_path,
                                predictions_geojson_path)
@@ -160,7 +165,7 @@ class Pipeline:
 
             # step 2: stitching
             crowns = stitch_crowns(predictions_geojson_path, 2)
-            # stitched_crowns = site_dir / f"stitched_crowns_{self.configs.model_name}.gpkg"
+            # stitched_crowns = site_dir / f"stitched_crowns_{self.configs.model}.gpkg"
             # crowns.to_file(stitched_crowns) # Temperarily save stitched crowns
             shutil.rmtree(predictions_geojson_path, ignore_errors=True) # Use this to save disk space 
 
