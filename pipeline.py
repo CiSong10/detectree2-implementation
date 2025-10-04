@@ -139,7 +139,70 @@ class Pipeline:
         trainer = MyTrainer(cfg, self.configs.patience)
         trainer.resume_or_load(resume=False)
         trainer.train()
+
+        self.logger.info(f"Fine-tuning completed. Results saved in {self.model_dir}")
+
         return cfg
+    
+    def plot_metrics(self):
+        plots_dir = self.model_dir / "plots"
+        plots_dir.mkdir(exist_ok=True)
+
+        # Load metrics
+        metrics_path = self.model_dir / "metrics.json"
+        experiment_metrics = load_json_arr(metrics_path)
+
+        # Plot training and validation loss
+        plt.figure()
+        plt.plot(
+            [x['iteration'] for x in experiment_metrics if 'validation_loss' in x],
+            [x['validation_loss'] for x in experiment_metrics if 'validation_loss' in x], 
+            label='Total Validation Loss', color='red'
+            )
+        plt.plot(
+            [x['iteration'] for x in experiment_metrics if 'total_loss' in x],
+            [x['total_loss'] for x in experiment_metrics if 'total_loss' in x], 
+            label='Total Training Loss'
+            )
+        plt.legend(loc='upper right')
+        plt.title('Comparison of the training and validation loss')
+        plt.ylabel('Total Loss')
+        plt.xlabel('Number of Iterations')
+        plt.tight_layout()
+        plt.savefig(plots_dir / 'training_validation_loss.png', dpi=300)
+        plt.close()
+
+        # plot AP50 metrics
+        colors = plt.cm.tab10.colors
+
+        for i, site_dir in enumerate(self.sites):
+            site = site_dir.stem
+            site_metrics = [x for x in experiment_metrics if site + '_val/segm/AP50' in x]
+            iterations = [x['iteration'] for x in site_metrics]
+            ap50_values = [x[site + '_val/segm/AP50'] for x in site_metrics]
+
+            plt.plot(
+                iterations, 
+                ap50_values,
+                label=f'Site {site} Validation AP50',
+                color = colors[i % len(colors)],
+                marker = 'o',
+                linewidth = 2
+                )
+        
+        plt.legend(loc="best")
+        plt.title('Comparison of the training and validation loss of Mask R-CNN')
+        plt.ylabel('AP50')
+        plt.xlabel('Number of Iterations')
+        plt.grid(True, linestyle='--', alpha=0.7)
+        plt.tight_layout()
+        plt.savefig(plots_dir / 'val_fold_ap50.png', dpi=300)
+        plt.close()
+    
+        self.logger.info(f"Saved plots to {plots_dir}")
+        
+
+        pass
 
     def predict(self, parallel=False):
         for site_dir in self.sites:
@@ -153,10 +216,7 @@ class Pipeline:
             # step 1: predicting
             model_path = find_final_model(self.model_dir)
             cfg = setup_cfg(update_model=model_path)
-            if parallel:
-                parallel_predict_on_data(tiles_dir, cfg=cfg)
-            else:
-                predict_on_data(tiles_dir, predictor=DefaultPredictor(cfg))
+            predict_on_data(tiles_dir, predictor=DefaultPredictor(cfg))
             
             project_to_geojson(tiles_dir,
                                predictions_json_path,

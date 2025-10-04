@@ -266,7 +266,7 @@ def parallel_predict_on_data(
 
     # Subset if needed
     num_to_pred = len(dataset_dicts) if num_predictions == 0 else num_predictions
-    dataset_dicts = dataset_dicts[:num_to_pred]
+    dataset_dicts = dataset_dicts[95180:num_to_pred]
 
     # Run parallel prediction
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
