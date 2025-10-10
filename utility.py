@@ -11,7 +11,7 @@ import random
 import rasterio
 import cv2
 import json
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from detectron2.data import DatasetCatalog, MetadataCatalog
 from detectron2.evaluation.coco_evaluation import instances_to_coco_json
@@ -239,8 +239,8 @@ def safe_register_train_data(train_location, name: str = "tree", val_fold=None, 
 
 def parallel_predict_on_data(
         directory: str | Path = "./",
-        out_folder: str | Path = "predictions",
-        cfg=None,
+        out_folder: str = "predictions",
+        predictor=DefaultPredictor,
         eval: bool=False,
         num_predictions=0,
         max_workers=4
@@ -266,12 +266,11 @@ def parallel_predict_on_data(
 
     # Subset if needed
     num_to_pred = len(dataset_dicts) if num_predictions == 0 else num_predictions
-    dataset_dicts = dataset_dicts[95180:num_to_pred]
 
     # Run parallel prediction
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [
-            executor.submit(_predict_file, d, pred_dir, cfg)
+            executor.submit(_predict_file, d, pred_dir, predictor)
             for d in dataset_dicts
         ]
 
@@ -283,12 +282,11 @@ def parallel_predict_on_data(
             future.result()  # raise exception if any
 
 
-def _predict_file(d, pred_dir, cfg):
+def _predict_file(d, pred_dir, predictor):
     """
     Worker function: create predictor, run inference, save results.
     Each process loads its own model (CUDA-safe).
     """
-    predictor = DefaultPredictor(cfg)
 
     file_name = Path(d['file_name'])
     file_ext = file_name.suffix.lower()
