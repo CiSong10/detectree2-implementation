@@ -11,6 +11,7 @@ import random
 import rasterio
 import cv2
 import json
+import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from detectron2.data import DatasetCatalog, MetadataCatalog
