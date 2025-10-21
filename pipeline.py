@@ -8,14 +8,14 @@ import geopandas as gpd
 import rasterio
 from detectree2.preprocessing.tiling import tile_data, to_traintest_folders, image_details, is_overlapping_box
 from detectree2.models.train import (register_train_data, MyTrainer, setup_cfg, 
-                                     load_json_arr, predictions_on_data)
+                                     load_json_arr, predictions_on_data, get_latest_model_path)
 from detectree2.models.outputs import project_to_geojson, to_eval_geojson, stitch_crowns, clean_crowns
 from detectree2.models.predict import predict_on_data
 from detectree2.models.evaluation import site_f1_score2
 from detectron2.engine import DefaultPredictor
 from configs import Configs
 
-from utility import (find_final_model, secondary_cleaning, to_traintest_folders_sample, 
+from utility import (secondary_cleaning, to_traintest_folders_sample, 
                      safe_register_train_data, parallel_predict_on_data)
 
 """ data structure
@@ -64,7 +64,7 @@ class Site:
         self.configs = configs
         self.logger = logging.getLogger(self.__class__.__name__)
 
-    def tile_data(self):
+    def tile(self):
         """
         Tile data. Skip if tiles already exists, unless force_retile config is True.
 
@@ -100,7 +100,11 @@ class Site:
                           self.configs.threshold, 
                           mode=self.configs.mode,
                           tile_placement=self.configs.tile_placement,
-                          multithreaded = True) 
+                          mask_path=None, # This can be added. No tiles will be created outside of mask
+                          multithreaded = True,
+                          additional_nodata = [256],
+                          overlapping_tiles=True,
+                          enhance_rgb_contrast=True) 
 
     def train(self):
         pass
@@ -143,7 +147,7 @@ class Site:
 
         # step 0: Tiling (already done)
         # step 1: predicting
-        model_path = find_final_model(f"models/finetuned/{self.configs.model}")
+        model_path = get_latest_model_path(f"models/finetuned/{self.configs.model}")
         cfg = setup_cfg(update_model=model_path)
         predict_on_data(self.tiles_dir, self.predict_dir, predictor=DefaultPredictor(cfg))
         
@@ -160,7 +164,7 @@ class Site:
         clean = clean_crowns(crowns, self.configs.intersection, confidence=self.configs.confidence, area_threshold=self.configs.min_area)
         clean = clean.set_geometry(clean.simplify(self.configs.simplify)) 
         clean_2 = secondary_cleaning(clean)
-        clean_2.to_file(self.crowns_out_file)
+        clean_2.to_file(self.crowns_out_file, driver='GPKG', layer=f"{self.name}_prediction_{self.configs.model}")
 
         self.logger.info(f"[{self.name}] Done predicting. Saved: {self.crowns_out_file}")
 
@@ -169,11 +173,8 @@ class Pipeline:
     def __init__(self, configs: Configs):
         self.configs = configs
 
-        self.appends = f"{self.configs.tile_size}_{self.configs.buffer}_{self.configs.threshold}"
-        self.model_dir = Path("models/finetuned") / (
-            configs.model or datetime.now().strftime("%y%m%d_%H")
-        )
-        self.model_dir.mkdir(parents=True, exist_ok=True)
+        self.appends = f"{configs.tile_size}_{configs.buffer}_{configs.threshold}"
+        self.model_dir = configs.model
 
         if isinstance(configs.data, str):
             configs.data = [configs.data]
@@ -183,30 +184,52 @@ class Pipeline:
         ]
         
         for site in self.sites:
-            site.tile_data()
+            site.tile()
 
         # random.seed(configs.seed)
         self.logger = logging.getLogger(self.__class__.__name__)
 
-    def train(self, sample_n_tiles=None):
+    def train(self):
+        
+        if Path('./eval').exists():
+            shutil.rmtree('./eval', True)
 
         train_datasets, val_datasets = [], []
 
         for site in self.sites:
             to_traintest_folders(site.tiles_dir, site.tiles_root, test_frac=self.configs.test_frac,
                                  folds=self.configs.folds, strict=self.configs.strict)
-            register_train_data(site.train_dir, site.name, val_fold=self.configs.val_fold)
+            register_train_data(site.train_dir, site.name, val_fold=1)
             train_datasets.append(f"{site.name}_train")
             val_datasets.append(f"{site.name}_val")
 
         cfg = setup_cfg(
-            self.configs.base_model, tuple(train_datasets), tuple(val_datasets),
-            self.configs.pretrained_model, self.configs.workers, 
-            eval_period=self.configs.eval_period, max_iter=self.configs.max_iter,
-            out_dir=str(self.model_dir), resize=self.configs.resize
+            self.configs.base_model, 
+            tuple(train_datasets), 
+            tuple(val_datasets),
+            self.configs.pretrained_model, 
+            self.configs.workers, 
+            gamma=0.1,
+            backbone_freeze=3,
+            base_lr=0.0003389,
+            max_iter=self.configs.max_iter,
+            eval_period=self.configs.eval_period, 
+            out_dir=str(self.model_dir), 
+            resize=self.configs.resize
         )
         trainer = MyTrainer(cfg, self.configs.patience)
         trainer.resume_or_load(resume=self.configs.resume)
+
+        if self.configs.freezing == True:
+            self.logger.info("Applying custom layer freezing... ")
+
+            # Freeze the initial convolutional stem
+            trainer.model.backbone.bottom_up.stem.freeze()
+
+            # # Freeze the blocks within the first residual stage (res2)
+            # for block in trainer.model.backbone.bottom_up.stages[0].children():
+            #     block.freeze()            
+
         trainer.train()
 
         self.logger.info(f"Fine-tuning completed. Results saved in {self.model_dir}")
@@ -216,12 +239,7 @@ class Pipeline:
         return cfg
     
     def _plot_metrics(self):
-        plots_dir = self.model_dir / "plots"
-        plots_dir.mkdir(exist_ok=True)
-
-        # Load metrics
-        metrics_path = self.model_dir / "metrics.json"
-        experiment_metrics = load_json_arr(metrics_path)
+        experiment_metrics = load_json_arr(self.model_dir / "metrics.json")
 
         # Plot training and validation loss
         plt.figure()
@@ -236,51 +254,62 @@ class Pipeline:
             label='Total Training Loss'
             )
         plt.legend(loc='upper right')
-        plt.title('Comparison of the training and validation loss')
+        plt.title(f'Training and validation loss of model {self.model_dir.stem}')
         plt.ylabel('Total Loss')
         plt.xlabel('Number of Iterations')
         plt.tight_layout()
-        plt.savefig(plots_dir / 'training_validation_loss.png', dpi=300)
+        plt.savefig(self.model_dir / 'training_validation_loss.png', dpi=300)
         plt.close()
 
         # plot AP50 metrics
         colors = plt.cm.tab10.colors
 
-        for i, site in enumerate(self.sites):
-            site_name = site.name
-            site_metrics = [x for x in experiment_metrics if f'{site_name}_val/segm/AP50' in x]
-            iterations = [x['iteration'] for x in site_metrics]
-            ap50_values = [x[f"{site_name}_val/segm/AP50"] for x in site_metrics]
+        if len(self.sites) > 1:
+            for i, site in enumerate(self.sites):
+                site_name = site.name
+                site_metrics = [x for x in experiment_metrics if f'{site_name}_val/segm/AP50' in x]
+                iterations = [x['iteration'] for x in site_metrics]
+                ap50_values = [x[f"{site_name}_val/segm/AP50"] for x in site_metrics]
 
+                plt.plot(
+                    iterations, 
+                    ap50_values,
+                    label=f'Site {site_name}',
+                    color = colors[i % len(colors)],
+                    marker = 'o',
+                    linewidth = 2
+                    )
+        else:
+            site = self.sites[0]
+            site_name = site.name
+            site_metrics = [x for x in experiment_metrics if 'segm/AP50' in x]
+            iterations = [x['iteration'] for x in site_metrics]
+            ap50_values = [x["segm/AP50"] for x in site_metrics]
             plt.plot(
                 iterations, 
                 ap50_values,
                 label=f'Site {site_name}',
-                color = colors[i % len(colors)],
                 marker = 'o',
                 linewidth = 2
                 )
         
         plt.legend(loc="best")
-        plt.title('Comparison of the training and validation loss of Mask R-CNN')
-        plt.ylabel('Validation AP50')
+        plt.title(f'Validation AP50 of model {self.model_dir.stem}')
+        plt.ylabel('AP50')
         plt.xlabel('Number of Iterations')
         plt.grid(True, linestyle='--', alpha=0.7)
         plt.tight_layout()
-        plt.savefig(plots_dir / 'val_fold_ap50.png', dpi=300)
+        plt.savefig(self.model_dir / 'val_ap50.png', dpi=300)
         plt.close()
-    
-        self.logger.info(f"Saved plots to {plots_dir}")
-        
 
-        pass
+        return
 
     def predict(self, parallel=False):
         for site in self.sites:
             site.predict()
 
     def evaluate(self, test_site: Path | str = None):
-        model_path = find_final_model(self.model_dir)
+        model_path = get_latest_model_path(self.model_dir)
         cfg = setup_cfg(update_model=model_path)
 
         eval_results = {}
@@ -292,7 +321,7 @@ class Pipeline:
                 eval_results[site.name] = {'precision': prec, 'recall': recall, 'f1': f1}
         else:
             test_site = Site(Path(test_site), self.appends, self.configs)
-            test_site.tile_data()
+            test_site.tile()
             to_traintest_folders(test_site.tiles_dir, test_site.tiles_root, test_frac=1, # everyything goes to the test_dir
                                  folds=self.configs.folds, strict=self.configs.strict)
             prec, recall, f1 = test_site.evaluate(cfg)

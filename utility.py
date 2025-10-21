@@ -23,40 +23,6 @@ from detectree2.models.train import register_train_data
 from detectree2.models.predict import get_tree_dicts, get_filenames
 
 
-def find_final_model(path: str | PathLike[str]) -> str:
-    """
-    Given a path to either:
-    - a checkpoint file (.pth), or
-    - a directory containing multiple checkpoints named model_*.pth,
-
-    Returns the path to `model_final.pth`.  
-    If `model_final.pth` does not exist in the directory, it will create
-    a symlink to the latest model (based on the numeric suffix).
-    """
-    path = Path(path)
-
-    if path.suffix == ".pth":
-        return str(path)
-    
-    if path.is_dir():
-        model_final_path = path / 'model_final.pth'
-
-        if not model_final_path.exists():
-            model_files = sorted(
-                path.glob("model_*.pth"),
-                key=lambda f: int(f.stem.split("_")[1])
-            )
-            if not model_files:
-                raise FileNotFoundError(f"No model_*.pth files found in {path}")
-            
-            latest_model = model_files[-1]
-            model_final_path.symlink_to(latest_model.name)
-
-        return str(model_final_path)
-    
-    raise ValueError(f"{path} is neither a .pth file nor a directory.")
-
-
 def secondary_cleaning(crowns, 
                        containing_threshold=0.8, 
                        small_area_ratio=0.8):
