@@ -16,7 +16,10 @@ from detectron2.engine import DefaultPredictor
 from configs import Configs
 
 from utility import (secondary_cleaning, to_traintest_folders_sample, 
-                     safe_register_train_data, parallel_predict_on_data)
+                     safe_register_train_data, parallel_predict_on_data,
+                     canopy_mask_filter)
+
+from rasterstats import zonal_stats
 
 """ data structure
 
@@ -26,6 +29,7 @@ from utility import (secondary_cleaning, to_traintest_folders_sample,
             - crowns.shp
         - rgb # img_dir
             - rgb.tif
+        - mask
         - tiles_{self.appends}  # tiles_root
             - tiles # tiles_dir
                 - t_1.tif
@@ -59,7 +63,7 @@ class Site:
         self.test_dir = self.tiles_root / "test"
         self.predict_dir = self.tiles_root / "predictions"
         self.predict_geojson_dir = self.tiles_root / "predictions_geo"
-        self.crowns_out_file = path / f"{self.name}_prediction_{configs.model}.gpkg"
+        self.crowns_out_file = path / f"{self.name}_prediction.gpkg"
 
         self.configs = configs
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -147,9 +151,9 @@ class Site:
 
         # step 0: Tiling (already done)
         # step 1: predicting
-        model_path = get_latest_model_path(f"models/finetuned/{self.configs.model}")
+        model_path = get_latest_model_path(self.configs.model)
         cfg = setup_cfg(update_model=model_path)
-        predict_on_data(self.tiles_dir, self.predict_dir, predictor=DefaultPredictor(cfg))
+        parallel_predict_on_data(self.tiles_dir, self.predict_dir, predictor=DefaultPredictor(cfg))
         
         project_to_geojson(self.tiles_dir,
                             self.predict_dir,
@@ -164,10 +168,12 @@ class Site:
         clean = clean_crowns(crowns, self.configs.intersection, confidence=self.configs.confidence, area_threshold=self.configs.min_area)
         clean = clean.set_geometry(clean.simplify(self.configs.simplify)) 
         clean_2 = secondary_cleaning(clean)
-        clean_2.to_file(self.crowns_out_file, driver='GPKG', layer=f"{self.name}_prediction_{self.configs.model}")
+
+        canopy_mask_path = next((self.path / "mask").glob("*.tif"))
+        clean_3 = canopy_mask_filter(clean_2, canopy_mask_path, self.crowns_out_file)
+        clean_3.to_file(self.crowns_out_file, driver="GPKG", layer=f"{self.name}_prediction_{self.configs.model.stem}")
 
         self.logger.info(f"[{self.name}] Done predicting. Saved: {self.crowns_out_file}")
-
 
 class Pipeline:
     def __init__(self, configs: Configs):
@@ -199,7 +205,7 @@ class Pipeline:
         for site in self.sites:
             to_traintest_folders(site.tiles_dir, site.tiles_root, test_frac=self.configs.test_frac,
                                  folds=self.configs.folds, strict=self.configs.strict)
-            register_train_data(site.train_dir, site.name, val_fold=1)
+            safe_register_train_data(site.train_dir, site.name, val_fold=1)
             train_datasets.append(f"{site.name}_train")
             val_datasets.append(f"{site.name}_val")
 
