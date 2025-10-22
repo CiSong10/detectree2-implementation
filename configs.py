@@ -42,7 +42,7 @@ class Configs:
     base_lr:float = 0.0003389
 
     # predict
-    confidence: float = 0.2 # Confidence threshold for filtering crowns
+    confidence: float = 0.1 # Confidence threshold for filtering crowns
     min_area: float = 2.0 # Minimum area of crowns to be retained (m^2)
     simplify: float = 0.3 # Tolerance for simplifying crown geometries
     intersection: float = 0.5 # Threshold for crown intersection

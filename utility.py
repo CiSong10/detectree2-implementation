@@ -13,6 +13,8 @@ import cv2
 import json
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from rasterio.mask import mask
+from shapely.geometry import mapping
 
 from detectron2.data import DatasetCatalog, MetadataCatalog
 from detectron2.evaluation.coco_evaluation import instances_to_coco_json
@@ -206,7 +208,7 @@ def safe_register_train_data(train_location, name: str = "tree", val_fold=None, 
 
 def parallel_predict_on_data(
         directory: str | Path = "./",
-        out_folder: str = "predictions",
+        out_folder: str | Path = "./predictions",
         predictor=DefaultPredictor,
         eval: bool=False,
         num_predictions=0,
@@ -217,7 +219,7 @@ def parallel_predict_on_data(
     One global progress bar is shown.
     """
     directory = Path(directory)
-    pred_dir = directory / out_folder
+    pred_dir = Path(out_folder)
     pred_dir.mkdir(parents=True, exist_ok=True)
 
     # Get dataset dictionaries
@@ -245,7 +247,7 @@ def parallel_predict_on_data(
         for future in tqdm(as_completed(futures),
                            total=len(futures),
                            desc=f"Predicting files in mode {mode}",
-                           unit="file"):
+                           ):
             future.result()  # raise exception if any
 
 
@@ -271,3 +273,43 @@ def _predict_file(d, pred_dir, predictor):
     output_file = pred_dir / f"Prediction_{file_name.stem}.json"
     evaluations = instances_to_coco_json(outputs["instances"].to("cpu"), str(file_name))
     output_file.write_text(json.dumps(evaluations))
+
+
+def canopy_mask_filter(crowns_path, canopy_mask_path, crowns_out_file, threshold=0.25):
+
+    crowns = gpd.read_file(crowns_path)
+    
+    with rasterio.open(canopy_mask_path) as src:
+        raster_bounds = src.bounds
+        raster_crs = src.crs
+        # print(f"Raster CRS: {raster_crs}")
+        # print(f"Crowns CRS: {crowns.crs}")
+
+        tree_fracs = []
+
+        for geom in tqdm(crowns.geometry, desc="Filtering crowns using canopy mask"):
+            out_image, out_transform = mask(src, [mapping(geom)], crop=True, filled=False)
+            data = out_image[0]
+
+            # Keep only valid pixels
+            valid = data[data >= 0]  # skip nodata
+            if valid.size == 0:
+                tree_frac = 0.0
+            else:
+                tree_frac = np.sum(valid == 1) / valid.size
+
+            tree_fracs.append(tree_frac)
+
+    # Add it as a new column
+    crowns["tree_frac_in_mask"] = tree_fracs
+
+    # Keep polygons where tree coverage >= 0.25 (i.e. ≤75% non-tree)
+    crowns_filtered = crowns[crowns["tree_frac_in_mask"] >= threshold].copy()
+
+    print(f"Canopy Mask filtered {len(crowns) - len(crowns_filtered)} polygons out of {len(crowns)}.")
+    
+    return crowns_filtered
+
+
+if __name__=="__main__":
+    pass
