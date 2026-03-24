@@ -15,7 +15,7 @@ class Configs:
     mode: str = "rgb" # "rgb" or "ms"
 
     # tiling
-    tile_size: int = 40
+    tile_size: int = 100
     buffer: int = 30
     threshold: float = 0 # Minimum proportion of the tile covered by crowns to be accepted [0,1]
     nan_threshold = 0.2
@@ -45,11 +45,11 @@ class Configs:
     # selective_band_usage = []
 
     # predict
-    confidence: float = 0.15 # Confidence threshold for filtering crowns
-    min_area: float = 1.5 # Minimum area of crowns to be retained (m^2)
+    confidence: float = 0.2 # Confidence threshold for filtering crowns
+    min_area: float = 2 # Minimum area of crowns to be retained (m^2)
     simplify: float = 0.3 # Tolerance for simplifying crown geometries
     intersection: float = 0.5 # Threshold for crown intersection
-
+    containment: float = 0.85
 
     def __post_init__(self):
         self.model_dir = Path("models/finetuned") / self.model
