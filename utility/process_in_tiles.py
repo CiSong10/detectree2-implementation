@@ -3,6 +3,7 @@ from shapely.geometry import box
 import pandas as pd
 from pathlib import Path
 
+
 def process_in_tiles(gdf, func, nx=5, ny=5, buffer=0):
     """
     Split a large GeoDataFrame into a regular grid tiles and apply a function
@@ -17,7 +18,7 @@ def process_in_tiles(gdf, func, nx=5, ny=5, buffer=0):
     Returns:
         GeoDataFrame: merged output after applying func to each tile
     """
-    
+
     xmin, ymin, xmax, ymax = gdf.total_bounds
 
     # Compute tile width/height
@@ -42,7 +43,7 @@ def process_in_tiles(gdf, func, nx=5, ny=5, buffer=0):
 
             if subset.empty:
                 continue
-            
+
             # Apply your cleaning function
             result = func(subset)
 
