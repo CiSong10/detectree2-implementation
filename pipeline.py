@@ -1,6 +1,5 @@
 import logging
 import shutil
-import re
 import matplotlib.pyplot as plt
 from pathlib import Path
 import geopandas as gpd
@@ -56,7 +55,7 @@ class Site:
         self.path = path
         self.name = path.stem
         self.crowns_dir = path / "crowns"
-        self.img_dir = path / "rgb" if configs.mode == "rgb" else path / "ms"
+        self.img_dir = path / configs.img_dir if configs.img_dir else path / configs.mode
         self.tiles_root = path / f"tiles_{appends}"
         self.tiles_dir = self.tiles_root / "tiles"
         self.train_dir = self.tiles_root / "train"
@@ -97,11 +96,6 @@ class Site:
                     self.crowns_dir.glob("*.gpkg")
                 )  # Allow crown_path not exist, just simply tile with crowns = None
                 crowns = gpd.read_file(crown_path)
-                # Check projection
-                # with rasterio.open(imgs_dir[0]) as img:
-                #     if crowns.crs != img.crs:
-                #         self.logger.warning(f"CRS mismatch. Transforming crowns from {crowns.crs} to {img.crs.data}")
-                #         crowns = crowns.to_crs(img.crs.data) # ensure CRS match
             except StopIteration:
                 crowns = None
 
@@ -117,7 +111,7 @@ class Site:
                     nan_threshold=self.configs.nan_threshold,
                     mode=self.configs.mode,
                     tile_placement=self.configs.tile_placement,
-                    mask_path=None,  # This can be added. No tiles will be created outside of mask
+                    mask_path=None,  # No tiles will be created outside of mask
                     multithreaded=False,
                     additional_nodata=[255],
                     overlapping_tiles=True,
@@ -142,14 +136,6 @@ class Site:
             shutil.rmtree(self.predict_dir, True)
         if Path("./eval").exists():
             shutil.rmtree("./eval", True)
-
-        #######################
-        # self.logger.info(f"Evaluating Site {self.name}")
-        # if self.configs.mode == "rgb":
-        #     predictor = DefaultPredictor(cfg)
-        # elif self.configs.mode == "ms":
-        #     predictor = MultiBandPredictor(cfg)
-        # predictions_on_data(self.tiles_root, predictor)
 
         predictions_on_data(self.tiles_root, DefaultPredictor(cfg))
         to_eval_geojson(self.predict_dir)
@@ -193,7 +179,9 @@ class Site:
         )
         try:
             canopy_mask_path = next((self.path / "mask").glob("*.tif"))
-            crowns = canopy_mask_filter(crowns, canopy_mask_path)
+            crowns = canopy_mask_filter(
+                crowns, canopy_mask_path, threshold=self.configs.mask_filter_threshold
+            )
         except StopIteration:
             self.logger.info(
                 f'[{self.name}] Did not find Canopy Mask in {str(self.path / "mask")}'
@@ -267,7 +255,7 @@ class Site:
             clean2 = secondary_cleaning(clean)
             clean2.to_file(gpkg_path, layer=f"chunk_{i}", driver="GPKG")
 
-        # Phase 2: Handle Edge Cases Only
+        # Phase 2: Handle Edge Cases
         # Compute tile boundaries automatically from GPKG layer extents
         print("Phase 2: Handling edge overlaps...")
         tile_bounds = []
@@ -332,7 +320,7 @@ class Pipeline:
         self.logger = logging.getLogger(self.__class__.__name__)
 
         if configs.mode == "ms":
-            self.num_bands = 4
+            self.num_bands = max(4, configs.num_bands)  # TODO: make it smarter
             # sample_raster = next(self.sites[0].img_dir.glob("*.tif"))
             # with rasterio.open(sample_raster) as r:
             # self.num_bands = r.count - len(self.configs.ignore_bands_indices)
@@ -381,22 +369,14 @@ class Pipeline:
             self.logger.info("Adjusting first conv layer weights for extra channels...")
             multiply_conv1_weights(trainer.model)
 
-        if self.configs.freezing == True:
+        if self.configs.freezing:
             self.logger.info("Applying custom layer freezing... ")
 
-            # Freeze the initial convolutional stem
-            # trainer.model.backbone.bottom_up.stem.freeze()
+            # Freeze all backbone layers except stem.conv1
+            # keep conv1 trainable to adapt to extra input channels
             for name, param in trainer.model.backbone.named_parameters():
                 if "stem.conv1" not in name:
                     param.requires_grad = False
-
-            # # Freeze the blocks within the first residual stage (res2)
-            # for block in trainer.model.backbone.bottom_up.stages[0].children():
-            #     block.freeze()
-
-        # if self.configs.mode == "ms" and self.configs.pretrained_model:
-        #     self.logger.info("Adjusting first conv layer weights for extra channels...")
-        #     multiply_conv1_weights(trainer.model)
 
         # if self.configs.selective_band_usage:
         #     FlexibleDatasetMapper = CustomBandMapper
@@ -526,7 +506,7 @@ class Pipeline:
         if not test_site:
             # right now it works for testing the "test" site of training
             for site in self.sites:
-                self.logger.info(f"[{site}] Evaluating...")
+                self.logger.info(f"[{site.name}] Evaluating...")
                 prec, recall, f1 = site.evaluate(cfg)
                 eval_results[site.name] = {
                     "precision": prec,
@@ -545,7 +525,7 @@ class Pipeline:
                 strict=self.configs.strict,
             )
             prec, recall, f1 = test_site.evaluate(cfg)
-            eval_results[test_site.stem] = {
+            eval_results[test_site.name] = {
                 "precision": prec,
                 "recall": recall,
                 "f1": f1,

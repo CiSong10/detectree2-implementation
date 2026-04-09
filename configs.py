@@ -15,6 +15,8 @@ class Configs:
 
     # mode
     mode: str = "rgb"  # "rgb" or "ms"
+    img_dir: str = None
+    num_bands: int = 3
 
     # tiling
     tile_size: int = 100
@@ -42,7 +44,7 @@ class Configs:
     seed: int = 0
     resize: str = "random"  # 'fixed', 'random', or 'rand_fixed'
     resume: bool = False  # Whether to resume training from the last checkpoint
-    freezing: bool = True  # Freeze backbone.stem and backbone.res2. TODO: enable more finegrain control later
+    freezing: bool = True  # Freeze backbone.stem TODO: enable more finegrain control later
     gamma: float = 0.1
     backbone_freeze: int = 3
     base_lr: float = 0.0003389
@@ -54,17 +56,21 @@ class Configs:
     simplify: float = 0.3  # Tolerance for simplifying crown geometries
     intersection: float = 0.5  # Threshold for crown intersection
     containment: float = 0.85
+    mask_filter_threshold: float = 0.5
 
     def __post_init__(self):
-        self.model_dir = Path("models/finetuned") / self.model
-        self.model_dir.mkdir(parents=True, exist_ok=True)
-
         if isinstance(self.data, str):
             self.data = [self.data]
 
-        # Write configs to configs.txt
-        config_file = self.model_dir / "configs.txt"
-        if not config_file.exists():
-            with open(config_file, "w") as f:
-                for key, value in asdict(self).items():
-                    f.write(f"{key}: {value}\n")
+        if not self.model:  # Predict on pre-trained model
+            self.model_dir = None
+        else:
+            self.model_dir = Path("models/finetuned") / self.model
+            self.model_dir.mkdir(parents=True, exist_ok=True)
+
+            # Write configs to configs.txt
+            config_file = self.model_dir / "configs.txt"
+            if not config_file.exists():
+                with open(config_file, "w") as f:
+                    for key, value in asdict(self).items():
+                        f.write(f"{key}: {value}\n")
