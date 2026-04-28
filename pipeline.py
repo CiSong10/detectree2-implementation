@@ -12,6 +12,7 @@ from detectree2.models.predict import predict_on_data
 from detectree2.models.evaluation import site_f1_score2
 from detectron2.engine import DefaultPredictor
 from configs import Configs
+import pandas as pd
 
 from utility.utility import (safe_register_train_data,
                              stitch_crowns_parallel, project_to_geojson_parallel,
@@ -84,6 +85,7 @@ class Site:
                 f"Tiles already exist for site {self.name}, skipping tiling."
             )
         else:
+            self.logger.info(f"Tiling site {self.name}")
             if self.tiles_root.exists():
                 shutil.rmtree(self.tiles_root)
 
@@ -112,12 +114,12 @@ class Site:
                     mode=self.configs.mode,
                     tile_placement=self.configs.tile_placement,
                     mask_path=None,  # No tiles will be created outside of mask
-                    multithreaded=False,
-                    additional_nodata=[255],
-                    overlapping_tiles=True,
+                    multithreaded=self.configs.multithreaded,
+                    additional_nodata=[255, 256],
+                    overlapping_tiles=self.configs.overlapping_tiles,
                     ignore_bands_indices=self.configs.ignore_bands_indices,
-                    use_convex_mask=False,
-                    enhance_rgb_contrast=True,
+                    use_convex_mask=self.configs.use_convex_mask,
+                    enhance_rgb_contrast=self.configs.enhance_rgb_contrast,
                 )
 
     def evaluate(self, cfg, dem=None):
@@ -177,6 +179,14 @@ class Site:
         crowns = stitch_crowns_parallel(
             self.predict_geojson_dir, shift=1, max_workers=self.configs.workers
         )
+
+        crowns.to_file(
+            self.crowns_out_file,
+            driver="GPKG",
+            layer=f"{self.name}_{self.configs.model}_unclean",
+        )
+
+        # Mask Filtering
         try:
             canopy_mask_path = next((self.path / "mask").glob("*.tif"))
             crowns = canopy_mask_filter(
@@ -187,11 +197,23 @@ class Site:
                 f'[{self.name}] Did not find Canopy Mask in {str(self.path / "mask")}'
             )
 
-        crowns.to_file(
-            self.crowns_out_file,
-            driver="GPKG",
-            layer=f"{self.name}_{self.configs.model}_unclean",
-        )
+        # Add ground truth
+        gt_crowns_dir = self.path / "gt_crowns"
+        if gt_crowns_dir.exists():
+            gt_files = list(gt_crowns_dir.glob("*.gpkg"))
+            if gt_files:
+                self.logger.info(
+                    f"[{self.name}] Adding back training polygons with a confidence score of 0.8."
+                    )
+                crowns_list = [crowns]
+                for f in gt_files:
+                    gt = gpd.read_file(f)
+                    gt = gt[['geometry']].copy()
+                    gt["Confidence_score"] = 0.8
+                    gt["tree_frac_in_mask"] = 0.99
+                    crowns_list.append(gt)
+
+                crowns = gpd.GeoDataFrame(pd.concat(crowns_list, ignore_index=True))
 
         # step 3: cleaning duplicates
         cleaned_crowns = clean_crowns(
@@ -470,7 +492,7 @@ class Pipeline:
         return
 
     def predict(self):
-        model_path = get_latest_model_path(self.model_dir)
+        model_path = get_latest_model_path(self.model_dir) if self.model_dir else self.configs.pretrained_model
         cfg = setup_cfg(
             update_model=model_path,
             imgmode=self.configs.mode,

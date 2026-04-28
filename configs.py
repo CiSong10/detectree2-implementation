@@ -1,6 +1,6 @@
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Union
+from typing import List
 
 
 @dataclass
@@ -13,21 +13,24 @@ class Configs:
     model: str = None
     data: str | list[str] = None
 
-    # mode
-    mode: str = "rgb"  # "rgb" or "ms"
+    # universial
     img_dir: str = None
     num_bands: int = 3
 
     # tiling
     tile_size: int = 100
     buffer: int = 30
-    threshold: float = (
-        0  # Minimum proportion of the tile covered by crowns to be accepted [0,1]
-    )
+    threshold: float = 0  # Minimum proportion of the tile covered by crowns to be accepted [0,1]
     nan_threshold = 0.2
-    force_retile: bool = False
-    ignore_bands_indices: List[int] = field(default_factory=list)
+    mode: str = "rgb"  # "rgb" or "ms"
+    class_column: str = None  # Column in the crowns file to use as the class label
     tile_placement: str = "adaptive"  # 'grid'
+    multithreaded: bool = True
+    overlapping_tiles: bool = True
+    ignore_bands_indices: List[int] = field(default_factory=list)
+    use_convex_mask: bool = True
+    enhance_rgb_contrast: bool = True
+    force_retile: bool = False
 
     # model
     base_model: str = "COCO-InstanceSegmentation/mask_rcnn_R_101_FPN_3x.yaml"
@@ -36,7 +39,7 @@ class Configs:
     # training
     test_frac: float = 0.15
     folds: int = 5
-    max_iter: int = 3500
+    max_iter: int = 3000
     eval_period: int = 100
     patience: int = 5
     workers: int = 8

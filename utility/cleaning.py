@@ -4,9 +4,9 @@ import numpy as np
 from concurrent.futures import ProcessPoolExecutor
 import rasterio
 from rasterio.mask import mask
-from shapely.geometry import mapping
+from shapely.geometry import box, mapping
 from tqdm import tqdm
-
+import logging
 
 def secondary_cleaning(crowns, containing_threshold=0.8, small_area_ratio=0.8):
     """
@@ -120,25 +120,29 @@ def canopy_mask_filter(crowns_path, canopy_mask_path, threshold=0.5):
         crowns = crowns_path
 
     with rasterio.open(canopy_mask_path) as src:
+        raster_bounds = box(*src.bounds)
+        crowns = crowns[crowns.geometry.intersects(raster_bounds)]
+
         tree_fracs = []
 
         for geom in tqdm(crowns.geometry, desc="Filtering crowns with canopy mask"):
-            try:
-                out_image, out_transform = mask(
-                    src, [mapping(geom)], crop=True, filled=False
-                )
-                data = out_image[0]
+            # try:
+            out_image, transform = mask(
+                src, [mapping(geom)], crop=True, filled=False
+            )
+            data = out_image[0]
 
-                # Keep only valid pixels
-                valid = data[data >= 0]  # skip nodata
-                if valid.size == 0:
-                    tree_frac = 0.0
-                else:
-                    tree_frac = np.sum(valid == 1) / valid.size
-
-            except (rasterio.errors.WindowError, ValueError) as e:
-                print(f"Error with geometry {geom}: {str(e)}")
+            # Keep only valid pixels
+            valid = data[data >= 0]  # skip nodata
+            if valid.size == 0:
                 tree_frac = 0.0
+            else:
+                tree_frac = np.sum(valid == 1) / valid.size
+
+            # except (rasterio.errors.WindowError, ValueError) as e:
+            #     x, y = geom.exterior.coords[0]
+            #     print(f"[Canopy_Mask_Filter] Error with geometry at {(round(x), round(y))}: {str(e)}")
+            #     tree_frac = 0.0
 
             tree_fracs.append(tree_frac)
 
@@ -147,9 +151,8 @@ def canopy_mask_filter(crowns_path, canopy_mask_path, threshold=0.5):
 
     # Keep polygons where tree coverage >= 0.5 (i.e. ≤50% non-tree)
     crowns_filtered = crowns[crowns["tree_frac_in_mask"] >= threshold].copy()
-    crowns_filtered.drop(columns=["tree_frac_in_mask"], errors="ignore", inplace=True)
 
-    print(
+    logging.info(
         f"Canopy Mask filtered {len(crowns) - len(crowns_filtered)} polygons out of {len(crowns)}."
     )
 
@@ -234,7 +237,7 @@ def canopy_mask_filter_fast(
 
     crowns["tree_frac_in_mask"] = results
     filtered = crowns[crowns["tree_frac_in_mask"] >= threshold].copy()
-    filtered.drop(columns=["tree_frac_in_mask"], errors="ignore", inplace=True)
+    # filtered.drop(columns=["tree_frac_in_mask"], errors="ignore", inplace=True)
     print(
         f"Canopy Mask filtered {len(crowns)-len(filtered)} polygons out of {len(crowns)}."
     )
